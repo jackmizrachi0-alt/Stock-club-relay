@@ -1,7 +1,6 @@
 {
   "name": "stock-club-price-relay",
   "version": "1.0.0",
-  "description": "Live price relay for The Floor stock club simulator (Finnhub).",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -15,3 +14,4 @@
     "ws": "^8.18.0"
   }
 }
+

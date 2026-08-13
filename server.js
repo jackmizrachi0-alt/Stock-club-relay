@@ -123,6 +123,18 @@ app.get("/api/news", async (req, res) => {
   res.json({ items, ts: Date.now() });
 });
 
+app.get("/api/quote", async (req, res) => {
+  const symbol = (req.query.symbol || "").toUpperCase().trim();
+  if (!symbol) return res.status(400).json({ error: "no symbol" });
+  try {
+    const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${KEY}`);
+    const q = await r.json();
+    if (!q || !q.c) return res.status(404).json({ error: "not found" });
+    res.json({ symbol, price: q.c, open: q.o || q.pc || q.c });
+  } catch (e) {
+    res.status(500).json({ error: "lookup failed" });
+  }
+});
 app.get("/", (req, res) => res.send("The Floor price relay is running."));
 
 app.listen(PORT, () => console.log("Relay listening on port", PORT));

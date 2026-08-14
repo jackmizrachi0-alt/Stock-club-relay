@@ -27,6 +27,9 @@ const opens = {};  // symbol -> today's open (for the "Today %" column)
 let newsCache = { items: [], ts: 0 };
 let newsInflight = null;
 
+const quoteCache = {};   // symbol -> { data, ts }
+const compNewsCache = {}; // symbol -> { items, ts }
+
 // --- seed current price + open once via REST, staggered to respect 60/min ---
 async function seed() {
   for (const s of SYMBOLS) {
@@ -104,6 +107,8 @@ async function getNews() {
   return newsInflight;
 }
 
+const ymd = (d) => d.toISOString().slice(0, 10);
+
 // --- HTTP: serve a snapshot from memory (zero Finnhub calls per request) ---
 const app = express();
 
@@ -123,18 +128,49 @@ app.get("/api/news", async (req, res) => {
   res.json({ items, ts: Date.now() });
 });
 
+// single-ticker live quote (cached 8s per symbol to protect the rate limit)
 app.get("/api/quote", async (req, res) => {
   const symbol = (req.query.symbol || "").toUpperCase().trim();
   if (!symbol) return res.status(400).json({ error: "no symbol" });
+  const c = quoteCache[symbol];
+  if (c && Date.now() - c.ts < 8000) return res.json(c.data);
   try {
     const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${KEY}`);
     const q = await r.json();
     if (!q || !q.c) return res.status(404).json({ error: "not found" });
-    res.json({ symbol, price: q.c, open: q.o || q.pc || q.c });
+    const data = { symbol, price: q.c, open: q.o || q.pc || q.c };
+    quoteCache[symbol] = { data, ts: Date.now() };
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: "lookup failed" });
   }
 });
+
+// recent news for one company (cached 5 min per symbol)
+app.get("/api/company-news", async (req, res) => {
+  const symbol = (req.query.symbol || "").toUpperCase().trim();
+  if (!symbol) return res.status(400).json({ error: "no symbol" });
+  const c = compNewsCache[symbol];
+  if (c && Date.now() - c.ts < 300000) return res.json({ items: c.items, ts: c.ts });
+  try {
+    const to = new Date();
+    const from = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000);
+    const url = `https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${ymd(from)}&to=${ymd(to)}&token=${KEY}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    const items = Array.isArray(data)
+      ? data.slice(0, 20).map((n) => ({
+          id: n.id, headline: n.headline, summary: n.summary,
+          source: n.source, url: n.url, image: n.image, datetime: n.datetime,
+        }))
+      : [];
+    compNewsCache[symbol] = { items, ts: Date.now() };
+    res.json({ items, ts: Date.now() });
+  } catch (e) {
+    res.status(500).json({ error: "lookup failed" });
+  }
+});
+
 app.get("/", (req, res) => res.send("The Floor price relay is running."));
 
 app.listen(PORT, () => console.log("Relay listening on port", PORT));

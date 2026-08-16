@@ -1,4 +1,4 @@
-// The Floor — live price relay
+The Floor — live price relay
 // One process holds ONE Finnhub connection and serves the same prices to
 // every student, so the leaderboard is fair. Your API key stays here on the
 // server and is never exposed to the browser.
@@ -169,6 +169,56 @@ app.get("/api/company-news", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: "lookup failed" });
   }
+});
+
+
+// --- per-stock daily price history for charts (cached 6h; class hits cache) ---
+const histCache = {}; // symbol -> { points, ts, src }
+const HIST_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+async function fetchStooq(sym) {
+  const url = `https://stooq.com/q/d/l/?s=${sym.toLowerCase()}.us&i=d`;
+  const r = await fetch(url);
+  const text = await r.text();
+  if (!text || text.slice(0, 4) !== "Date") return null; // quota msg / error
+  const lines = text.trim().split("\n").slice(1);
+  const pts = [];
+  for (const ln of lines) {
+    const col = ln.split(",");
+    const c = parseFloat(col[4]);
+    if (col[0] && !isNaN(c)) pts.push({ t: col[0], c: c });
+  }
+  return pts.length ? pts : null;
+}
+
+async function fetchYahoo(sym) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=6mo&interval=1d`;
+  const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  const j = await r.json();
+  const res = j && j.chart && j.chart.result && j.chart.result[0];
+  if (!res || !res.timestamp) return null;
+  const ts = res.timestamp;
+  const cl = res.indicators.quote[0].close;
+  const pts = [];
+  for (let i = 0; i < ts.length; i++) {
+    if (cl[i] == null) continue;
+    pts.push({ t: new Date(ts[i] * 1000).toISOString().slice(0, 10), c: Math.round(cl[i] * 100) / 100 });
+  }
+  return pts.length ? pts : null;
+}
+
+app.get("/api/history", async (req, res) => {
+  const symbol = (req.query.symbol || "").toUpperCase().trim();
+  if (!symbol || !/^[A-Z.]{1,8}$/.test(symbol)) return res.status(400).json({ error: "bad symbol" });
+  const c = histCache[symbol];
+  if (c && Date.now() - c.ts < HIST_TTL) return res.json({ symbol, points: c.points, src: c.src, cached: true });
+  let points = null, src = null;
+  try { points = await fetchStooq(symbol); if (points) src = "stooq"; } catch (e) {}
+  if (!points) { try { points = await fetchYahoo(symbol); if (points) src = "yahoo"; } catch (e) {} }
+  if (!points) return res.status(502).json({ error: "no history", symbol });
+  if (points.length > 130) points = points.slice(-130); // ~6 months of trading days
+  histCache[symbol] = { points, ts: Date.now(), src };
+  res.json({ symbol, points, src });
 });
 
 app.get("/", (req, res) => res.send("The Floor price relay is running."));
